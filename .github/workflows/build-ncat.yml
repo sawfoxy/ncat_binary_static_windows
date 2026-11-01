@@ -1,53 +1,128 @@
-name: Compile Static Ncat
+name: Build fwd.exe
 
 on:
+  workflow_dispatch:
   push:
     branches: [ "main", "master" ]
-  workflow_dispatch:
 
 jobs:
-  build-static-windows:
+  build:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Descargar código fuente de Nmap
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-go@v5
       with:
-        repository: nmap/nmap
-        ref: master
+        go-version: 'stable'
 
-    - name: Instalar MinGW y dependencias
+    - name: Compilar
       run: |
-        sudo apt-get update
-        sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 make autoconf
+        cat > main.go <<'EOF'
+        package main
 
-    - name: Configurar entorno para compilación estática
-      run: |
-        ./configure --host=x86_64-w64-mingw32 \
-          --without-openssl \
-          --without-libpcap \
-          --without-liblua \
-          --without-libssh2 \
-          --without-libz \
-          --without-zenmap \
-          --without-ndiff \
-          --without-nping \
-          --without-nmap-update \
-          CFLAGS="-static -static-libgcc" \
-          CXXFLAGS="-static -static-libgcc -static-libstdc++" \
-          LDFLAGS="-static -static-libgcc -static-libstdc++"
+        import (
+        	"io"
+        	"log"
+        	"net"
+        	"os"
+        	"sync"
+        	"time"
+        )
 
-    - name: Compilar dependencias y Ncat
-      run: |
-        make -C nbase
-        make -C nsock/src
-        make -C ncat LDFLAGS="-static -static-libgcc -static-libstdc++" LIBS="-lws2_32 -liphlpapi -lwsock32"
+        func tcp(listen, target string) {
+        	l, err := net.Listen("tcp", listen)
+        	if err != nil {
+        		log.Fatal(err)
+        	}
+        	for {
+        		c, err := l.Accept()
+        		if err != nil {
+        			continue
+        		}
+        		go func() {
+        			defer c.Close()
+        			d, err := net.Dial("tcp", target)
+        			if err != nil {
+        				return
+        			}
+        			defer d.Close()
+        			go io.Copy(d, c)
+        			io.Copy(c, d)
+        		}()
+        	}
+        }
 
-    - name: Reducir tamaño
-      run: x86_64-w64-mingw32-strip ncat/ncat.exe
+        func udp(listen, target string) {
+        	la, _ := net.ResolveUDPAddr("udp", listen)
+        	ta, err := net.ResolveUDPAddr("udp", target)
+        	if err != nil {
+        		log.Fatal(err)
+        	}
+        	srv, err := net.ListenUDP("udp", la)
+        	if err != nil {
+        		log.Fatal(err)
+        	}
+        	var mu sync.Mutex
+        	sessions := map[string]*net.UDPConn{}
+        	buf := make([]byte, 65535)
+        	for {
+        		n, ca, err := srv.ReadFromUDP(buf)
+        		if err != nil {
+        			continue
+        		}
+        		key := ca.String()
+        		mu.Lock()
+        		up, ok := sessions[key]
+        		if !ok {
+        			up, err = net.DialUDP("udp", nil, ta)
+        			if err != nil {
+        				mu.Unlock()
+        				continue
+        			}
+        			sessions[key] = up
+        			go func(up *net.UDPConn, ca *net.UDPAddr, key string) {
+        				b := make([]byte, 65535)
+        				for {
+        					up.SetReadDeadline(time.Now().Add(60 * time.Second))
+        					m, err := up.Read(b)
+        					if err != nil {
+        						mu.Lock()
+        						delete(sessions, key)
+        						mu.Unlock()
+        						up.Close()
+        						return
+        					}
+        					srv.WriteToUDP(b[:m], ca)
+        				}
+        			}(up, ca, key)
+        		}
+        		mu.Unlock()
+        		up.Write(buf[:n])
+        	}
+        }
 
-    - name: Guardar artefacto
-      uses: actions/upload-artifact@v4
+        func main() {
+        	if len(os.Args) != 4 {
+        		log.Fatal("uso: fwd <tcp|udp|both> <escucha :8080> <destino 192.168.1.50:80>")
+        	}
+        	mode, l, t := os.Args[1], os.Args[2], os.Args[3]
+        	switch mode {
+        	case "tcp":
+        		tcp(l, t)
+        	case "udp":
+        		udp(l, t)
+        	case "both":
+        		go udp(l, t)
+        		tcp(l, t)
+        	default:
+        		log.Fatal("modo invalido")
+        	}
+        }
+        EOF
+        go mod init fwd
+        GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o fwd.exe main.go
+
+    - uses: actions/upload-artifact@v4
       with:
-        name: ncat-static-windows-x64
-        path: ncat/ncat.exe
+        name: fwd-windows-x64
+        path: fwd.exe
