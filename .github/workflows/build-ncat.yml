@@ -1,0 +1,44 @@
+name: Compile Static Ncat
+
+# Se ejecuta al hacer push o manualmente desde la web
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch: 
+
+jobs:
+  build-static-windows:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Descargar código fuente de Nmap
+      uses: actions/checkout@v4
+      with:
+        repository: nmap/nmap
+        ref: master
+
+    - name: Instalar MinGW y dependencias
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 make autoconf
+
+    - name: Configurar entorno para compilación estática
+      run: |
+        ./configure --host=x86_64-w64-mingw32 \
+        --without-openssl \
+        --with-pcap=null \
+        --without-zenmap \
+        --without-ndiff \
+        --without-nping \
+        CXXFLAGS="-static -static-libgcc -static-libstdc++" \
+        CFLAGS="-static -static-libgcc" \
+        LDFLAGS="-static -static-libgcc -static-libstdc++"
+
+    - name: Compilar el binario
+      run: make ncat
+
+    - name: Extraer y guardar el Artefacto
+      uses: actions/upload-artifact@v4
+      with:
+        name: ncat-static-windows-x64
+        path: ncat/ncat.exe
