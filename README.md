@@ -1,0 +1,1 @@
+# ncat_binary_static_windows
