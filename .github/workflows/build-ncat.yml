@@ -3,7 +3,7 @@ name: Compile Static Ncat
 on:
   push:
     branches: [ "main", "master" ]
-  workflow_dispatch: 
+  workflow_dispatch:
 
 jobs:
   build-static-windows:
@@ -24,19 +24,29 @@ jobs:
     - name: Configurar entorno para compilación estática
       run: |
         ./configure --host=x86_64-w64-mingw32 \
-        --without-openssl \
-        --with-libpcap=included \
-        --without-zenmap \
-        --without-ndiff \
-        --without-nping \
-        CXXFLAGS="-static -static-libgcc -static-libstdc++" \
-        CFLAGS="-static -static-libgcc" \
-        LDFLAGS="-static -static-libgcc -static-libstdc++"
+          --without-openssl \
+          --without-libpcap \
+          --without-liblua \
+          --without-libssh2 \
+          --without-libz \
+          --without-zenmap \
+          --without-ndiff \
+          --without-nping \
+          --without-nmap-update \
+          CFLAGS="-static -static-libgcc" \
+          CXXFLAGS="-static -static-libgcc -static-libstdc++" \
+          LDFLAGS="-static -static-libgcc -static-libstdc++"
 
-    - name: Compilar el binario
-      run: make ncat
+    - name: Compilar dependencias y Ncat
+      run: |
+        make -C nbase
+        make -C nsock/src
+        make -C ncat LDFLAGS="-static -static-libgcc -static-libstdc++" LIBS="-lws2_32 -liphlpapi -lwsock32"
 
-    - name: Extraer y guardar el Artefacto
+    - name: Reducir tamaño
+      run: x86_64-w64-mingw32-strip ncat/ncat.exe
+
+    - name: Guardar artefacto
       uses: actions/upload-artifact@v4
       with:
         name: ncat-static-windows-x64
